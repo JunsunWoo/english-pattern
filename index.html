@@ -319,7 +319,7 @@ const DOW = ['일', '월', '화', '수', '목', '금', '토'];
 // ================= 데이터 · 학습 기록 =================
 let BOOK = LS.get('book', null);
 let IDX = null;
-const defaultSettings = () => ({ perDay: 2, rate: 0.9, voiceA: '', voiceB: '', readKo: true, repeat: 1, autoplay: true, hideEn: false,
+const defaultSettings = () => ({ perDay: 2, rate: 0.9, voiceA: '', voiceB: '', readKo: true, repeat: 1, autoplay: true, hideEn: false, native: true,
   quiz: { range: 'learned', count: 10, types: { fill: true, choice: true, listen: true, speak: false } } });
 let P = Object.assign({ done: {}, fav: {}, cards: {}, wrong: {}, days: {}, tests: {}, daily: null }, LS.get('prog', {}));
 P.settings = Object.assign(defaultSettings(), P.settings || {});
@@ -414,15 +414,58 @@ const TTS = (() => {
     for (let i = 0; i < items.length; i++) {
       if (my !== token) return false;
       const it = items[i]; onItem?.(it);
-      await one(it.text, it.voice, it.lang || 'en-US', it.rate || P.settings.rate);
+      // 원어민 MP3 구간이 있으면 그걸 재생하고, 실패하면(오프라인 등) 아이폰 음성으로 대신 읽는다
+      const r = it.clip ? await CLIP.play(it.clip) : 'fail';
+      if (r === 'fail' && my === token) await one(it.text, it.voice, it.lang || 'en-US', it.rate || P.settings.rate);
       if (my !== token) return false;
       await sleep(it.pause ?? 250);
     }
     if (my === token) onItem?.(null);
     return my === token;
   }
-  function stop() { token++; if (synth) synth.cancel(); }
+  function stop() { token++; if (synth) synth.cancel(); CLIP.stop(); }
   return { play, stop, en, ranked, ko, voice, refresh, onChange: (f) => listeners.push(f), get ok() { return !!synth; } };
+})();
+
+// ================= 예문 원어민 소리 (출판사 훈련 MP3의 해당 구간만 재생) =================
+// mp3times.json: { 패턴번호: [[한국어 시작, 끝, 영어 시작, 끝], ...예문 순서] } — 시간표(숫자)만 담고 있다
+let TIMES = LS.get('times', null);
+fetch('mp3times.json', { cache: 'no-cache' }).then((r) => (r.ok ? r.json() : null)).then((j) => { if (j && j.t) { TIMES = j.t; LS.set('times', j.t); } }).catch(() => {});
+
+const CLIP = (() => {
+  const a = new Audio();
+  a.preload = 'auto'; a.setAttribute('playsinline', ''); a.setAttribute('webkit-playsinline', '');
+  const URL_OF = (n) => `https://nexusbook.com/vod/qr/5061/ex/${n}.mp3`;
+  let token = 0;
+  const once = (ev, ms) => new Promise((res) => {
+    let t; const f = () => { clearTimeout(t); a.removeEventListener(ev, f); res(true); };
+    a.addEventListener(ev, f); t = setTimeout(() => { a.removeEventListener(ev, f); res(false); }, ms);
+  });
+  // 반환: 'ok' 끝까지 재생 / 'stopped' 다른 재생으로 중단 / 'fail' 재생 불가
+  function play({ n, s, e }) {
+    const my = ++token, url = URL_OF(n), rate = P.settings.mp3Rate || 1;
+    a.muted = true;                       // 원하는 위치로 옮기기 전 소리가 새지 않게
+    if (a.src !== url) a.src = url;
+    a.playbackRate = rate;
+    const started = a.play();             // iOS는 사용자의 탭 안에서 바로 play()를 불러야 허용
+    return (async () => {
+      const gone = () => (my === token ? 'fail' : 'stopped');
+      try { await started; } catch { return gone(); }
+      if (a.readyState < 1 && !(await once('loadedmetadata', 8000))) return gone();
+      if (my !== token) return 'stopped';
+      a.currentTime = Math.max(0, s - 0.08);
+      await once('seeked', 4000);
+      if (my !== token) return 'stopped';
+      a.playbackRate = rate; a.muted = false;
+      const endAt = e + 0.12, limit = performance.now() + ((e - s) / rate) * 1000 + 6000;
+      while (my === token && a.currentTime < endAt && !a.ended && performance.now() < limit) await sleep(30);
+      if (my !== token) return 'stopped';
+      a.pause(); a.muted = true;
+      return 'ok';
+    })();
+  }
+  function stop() { token++; a.pause(); a.muted = true; }
+  return { play, stop };
 })();
 
 const voiceA = () => TTS.voice(P.settings.voiceA, 0);
@@ -434,10 +477,13 @@ const voiceB = () => {
 const voiceSelValue = (key) => (P.settings[key] === '__system' ? '__system' : (key === 'voiceA' ? voiceA() : voiceB())?.name || '');
 const enItem = (text, el, who = 'A', extra = {}) => ({ text, el, voice: who === 'B' ? voiceB() : voiceA(), lang: 'en-US', ...extra });
 const koItem = (text, el, extra = {}) => ({ text, el, voice: TTS.ko(), lang: 'ko-KR', rate: Math.min(1.1, P.settings.rate + 0.1), ...extra });
+const exTime = (p, i) => (P.settings.native !== false && TIMES && TIMES[p.no] && TIMES[p.no][i]) || null;
+function exEnItem(p, i, el, extra = {}) { const t = exTime(p, i), it = enItem(segText(p.examples[i].en), el, 'A', extra); if (t) it.clip = { n: p.no, s: t[2], e: t[3] }; return it; }
+function exKoItem(p, i, el, extra = {}) { const t = exTime(p, i), it = koItem(segText(p.examples[i].ko), el, extra); if (t) it.clip = { n: p.no, s: t[0], e: t[1] }; return it; }
 
 let playingToken = 0;
 async function playItems(items) {
-  if (!TTS.ok) return toast('이 브라우저는 음성 읽기를 지원하지 않습니다');
+  if (!TTS.ok && !items.every((it) => it.clip)) return toast('이 브라우저는 음성 읽기를 지원하지 않습니다');
   MP3.pause();
   const my = ++playingToken;
   const clear = () => $$('.playing').forEach((e) => e.classList.remove('playing'));
@@ -455,6 +501,7 @@ async function playItems(items) {
 function stopAudio() { playingToken++; TTS.stop(); $$('.playing').forEach((e) => e.classList.remove('playing')); $('#player').hidden = true; }
 $('#playerStop').onclick = stopAudio;
 const say = (text, who = 'A') => playItems([enItem(text, null, who)]);
+const sayEx = (p, i, el = null) => playItems([exEnItem(p, i, el)]);
 
 // ================= 원어민 MP3 (출판사 QR 자료를 그 서버에서 바로 재생) =================
 const MP3 = (() => {
@@ -702,15 +749,15 @@ ACT.mp3 = (el) => MP3.play([{ k: el.dataset.k, n: +el.dataset.n }]);
 ACT.todayMp3 = () => { const list = todayList().flatMap((n) => [{ k: 'li', n }, { k: 'ex', n }]); if (list.length) MP3.play(list); };
 ACT.fav = (el) => { const n = CUR.no; if (P.fav[n]) delete P.fav[n]; else P.fav[n] = 1; save(); el.classList.toggle('on', !!P.fav[n]); el.innerHTML = P.fav[n] ? ICON.starOn : ICON.star; };
 ACT.sayTitle = () => say(CUR.en.replace(/[~…]+/g, ' ').replace(/\.{2,}/g, ' '));
-ACT.sayEx = (el) => { const i = +el.dataset.i, ex = el.closest('.ex'); ex.classList.add('revealed'); playItems([enItem(segText(CUR.examples[i].en), ex)]); };
+ACT.sayEx = (el) => { const i = +el.dataset.i, ex = el.closest('.ex'); ex.classList.add('revealed'); sayEx(CUR, i, ex); };
 ACT.revealEx = (el) => el.closest('.ex').classList.add('revealed');
 ACT.toggleHide = () => { P.settings.hideEn = !P.settings.hideEn; save(); const y = window.scrollY; viewPattern(CUR.no); window.scrollTo(0, y); };
 ACT.playEx = () => {
   const items = [];
   $$('#exCard .ex').forEach((ex, i) => {
     const e = CUR.examples[i];
-    if (P.settings.readKo) items.push(koItem(segText(e.ko), ex, { pause: 350 }));
-    for (let r = 0; r < P.settings.repeat; r++) items.push(enItem(segText(e.en), ex, 'A', { pause: r < P.settings.repeat - 1 ? 600 : 900 }));
+    if (P.settings.readKo) items.push(exKoItem(CUR, i, ex, { pause: 350 }));
+    for (let r = 0; r < P.settings.repeat; r++) items.push(exEnItem(CUR, i, ex, { pause: r < P.settings.repeat - 1 ? 600 : 900 }));
   });
   $$('#exCard .ex').forEach((ex) => ex.classList.add('revealed'));
   playItems(items);
@@ -783,11 +830,11 @@ function makeQ(id, types) {
   if (types.choice) kinds.push('choice');
   if (types.listen) kinds.push('listen');
   if (!kinds.length) return null;
-  const kind = pick(kinds);
-  if (kind === 'fill') return { kind, id, p: x.p, e: x.e, answers: hlParts(x.e.en) };
-  if (kind === 'choice') { const opts = enOptions(x.p, x.e); return { kind, id, p: x.p, e: x.e, opts, correct: opts.indexOf(segText(x.e.en)) }; }
+  const kind = pick(kinds), base = { id, p: x.p, e: x.e, i: x.i };
+  if (kind === 'fill') return { kind, ...base, answers: hlParts(x.e.en) };
+  if (kind === 'choice') { const opts = enOptions(x.p, x.e); return { kind, ...base, opts, correct: opts.indexOf(segText(x.e.en)) }; }
   const opts = koOptions(x.p, x.e);
-  return { kind: 'listen', id, p: x.p, e: x.e, opts, correct: opts.indexOf(segText(x.e.ko)) };
+  return { kind: 'listen', ...base, opts, correct: opts.indexOf(segText(x.e.ko)) };
 }
 function idsForRange(range) {
   if (range === 'wrong') return Object.keys(P.wrong).filter(itemOf);
@@ -900,6 +947,12 @@ function answerSentence(q) {
   if (q.kind === 'speak') return q.l.tEn;
   return segText(q.e.en);
 }
+// 정답 문장 듣기: 예문이면 원어민 구간, 대화면 화자 목소리, 단원 테스트는 아이폰 음성
+function sayAnswer(q) {
+  if (q.e && q.i != null) return sayEx(q.p, q.i);
+  if (q.kind === 'speak') return say(q.l.tEn, q.l.s === 'B' ? 'B' : 'A');
+  return say(answerSentence(q));
+}
 function feedback(ok, q, extra = '') {
   QZ.answered = true;
   QZ.results.push({ q, ok });
@@ -908,7 +961,7 @@ function feedback(ok, q, extra = '') {
     <div class="fb ${ok ? 'ok' : 'bad'}"><div><div class="t">${ok ? '정답' : '오답'}</div><div class="a">${esc(sentence)}</div>${q.kind === 'listen' || q.kind === 'choice' ? `<div class="sm muted" style="margin-top:3px">${esc(segText(q.e.ko))}</div>` : ''}</div><button class="play" data-act="fbPlay" aria-label="듣기">${ICON.play}</button></div>
     ${extra}
     <button class="btn primary block" data-act="next">${QZ.i + 1 < QZ.qs.length ? '다음' : '결과 보기'}</button>`;
-  if (P.settings.autoplay && q.kind !== 'listen') say(sentence);
+  if (P.settings.autoplay && q.kind !== 'listen') sayAnswer(q);
   $('#fb').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 ACT.check = () => {
@@ -928,8 +981,8 @@ ACT.opt = (el) => {
   $$('.opt').forEach((b, k) => { if (k === q.correct) b.classList.add('correct'); else if (k === i) b.classList.add('wrong'); });
   feedback(ok, q);
 };
-ACT.qListen = () => { const q = QZ.qs[QZ.i]; say(segText(q.e.en)); };
-ACT.fbPlay = () => say(answerSentence(QZ.qs[QZ.i]));
+ACT.qListen = () => { const q = QZ.qs[QZ.i]; sayEx(q.p, q.i); };
+ACT.fbPlay = () => sayAnswer(QZ.qs[QZ.i]);
 ACT.speakReveal = () => {
   const q = QZ.qs[QZ.i];
   $('#speakArea').innerHTML = `<div class="fb ok" style="background:var(--surface2)"><div><div class="a" style="font-size:18px">${esc(q.l.tEn)}</div></div><button class="play" data-act="fbPlay" aria-label="듣기">${ICON.play}</button></div>
@@ -962,7 +1015,7 @@ function viewQuizResult() {
     <div class="pnav">${wrong.length ? '<button class="btn primary grow" data-act="retryWrong">틀린 것만 다시</button>' : ''}<a class="btn grow" href="#/quiz">테스트 홈</a></div>`;
   QZ.wrongList = wrong;
 }
-ACT.resPlay = (el) => say(answerSentence(QZ.wrongList[+el.dataset.i].q));
+ACT.resPlay = (el) => sayAnswer(QZ.wrongList[+el.dataset.i].q);
 ACT.retryWrong = () => {
   const qs = QZ.wrongList.map((r) => (r.q.id ? makeQ(r.q.id, { fill: true, choice: true, listen: true, speak: true }) || r.q : r.q));
   startQuiz(shuffle(qs), QZ.title + ' · 다시', QZ.meta.unit ? {} : QZ.meta);
@@ -1021,9 +1074,9 @@ function reviewCard() {
     ${RV.shown ? `<div class="grade"><button class="g-again" data-act="rvGrade" data-g="again">몰랐음<small>다시 나옴</small></button><button class="g-hard" data-act="rvGrade" data-g="hard">헷갈림<small>내일</small></button><button class="g-good" data-act="rvGrade" data-g="good">알았음<small>${INTERVALS[Math.min((P.cards[id]?.box ?? 0) + 1, INTERVALS.length - 1)]}일 뒤</small></button></div>`
       : '<button class="btn primary block" data-act="rvShow">정답 보기</button>'}`;
 }
-const rvSentence = () => { const x = itemOf(RV.queue[RV.i]); return x.kind === 'e' ? { t: segText(x.e.en), who: 'A' } : { t: x.l.tEn, who: x.l.s === 'B' ? 'B' : 'A' }; };
-ACT.rvShow = () => { if (!RV || RV.shown) return; RV.shown = true; reviewCard(); if (P.settings.autoplay) { const s = rvSentence(); say(s.t, s.who); } };
-ACT.rvPlay = () => { const s = rvSentence(); say(s.t, s.who); };
+const rvSay = () => { const x = itemOf(RV.queue[RV.i]); if (x.kind === 'e') sayEx(x.p, x.i); else say(x.l.tEn, x.l.s === 'B' ? 'B' : 'A'); };
+ACT.rvShow = () => { if (!RV || RV.shown) return; RV.shown = true; reviewCard(); if (P.settings.autoplay) rvSay(); };
+ACT.rvPlay = rvSay;
 ACT.rvGrade = (el) => {
   const id = RV.queue[RV.i], g = el.dataset.g, t = today();
   const c = P.cards[id] || (P.cards[id] = { box: 0, due: t });
@@ -1053,7 +1106,8 @@ function viewSettings() {
     </section>
     <section class="card">
       <h2>소리</h2>
-      <div class="set-row" style="border-top:0"><span>목소리 A</span><select data-voice="voiceA">${vOpts('voiceA')}</select></div>
+      <div class="set-row" style="border-top:0"><div><div>예문은 원어민 녹음으로</div><div class="set-sub">출판사 MP3의 해당 문장 · 인터넷 필요 (안 되면 아이폰 음성)</div></div><input type="checkbox" class="sw" data-set="native" ${s.native !== false ? 'checked' : ''}></div>
+      <div class="set-row"><span>목소리 A <span class="muted sm">(대화·기타)</span></span><select data-voice="voiceA">${vOpts('voiceA')}</select></div>
       <div class="set-row"><span>목소리 B <span class="muted sm">(대화 상대)</span></span><select data-voice="voiceB">${vOpts('voiceB')}</select></div>
       <div class="set-row"><div><div>사용 가능한 영어 목소리</div><div class="set-sub">${voices.length}개${voices.some((v) => /ava/i.test(v.name)) ? ' · Ava 있음' : ''}</div></div><button class="btn sm" data-act="refreshVoices">목록 새로고침</button></div>
       <div class="set-row"><span>속도 <b id="rateV">${s.rate.toFixed(2)}</b></span><input type="range" min="0.6" max="1.2" step="0.05" value="${s.rate}" id="rate"></div>

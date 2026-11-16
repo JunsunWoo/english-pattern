@@ -1,6 +1,6 @@
 // 오프라인 지원: 온라인이면 최신 파일(서버에 바뀌었는지 매번 확인), 오프라인이면 저장해 둔 파일
-const CACHE = 'ep500-v2';
-const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png'];
+const CACHE = 'ep500-v3';
+const ASSETS = ['./', './index.html', './manifest.webmanifest', './mp3times.json', './icon-180.png', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));
