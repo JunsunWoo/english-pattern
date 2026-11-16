@@ -365,7 +365,9 @@ const TTS = (() => {
     return [...new Set([...nice, ...us, ...all])];
   };
   const ko = () => voices.find((v) => /^ko/i.test(v.lang)) || null;
-  function voice(name, k) { return en().find((v) => v.name === name) || ranked()[k] || ranked()[0] || null; }
+  // '__system' = 목소리를 지정하지 않고 iOS 설정(손쉬운 사용 → 읽기 및 말하기)의 기본 음성에 맡김
+  function voice(name, k) { if (name === '__system') return null; return en().find((v) => v.name === name) || ranked()[k] || ranked()[0] || null; }
+  const refresh = () => load();
   function one(text, voiceObj, lang, rate) {
     return new Promise((res) => {
       if (!synth) return res();
@@ -391,7 +393,7 @@ const TTS = (() => {
     return my === token;
   }
   function stop() { token++; if (synth) synth.cancel(); }
-  return { play, stop, en, ranked, ko, voice, onChange: (f) => listeners.push(f), get ok() { return !!synth; } };
+  return { play, stop, en, ranked, ko, voice, refresh, onChange: (f) => listeners.push(f), get ok() { return !!synth; } };
 })();
 
 const voiceA = () => TTS.voice(P.settings.voiceA, 0);
@@ -400,6 +402,7 @@ const voiceB = () => {
   if (!P.settings.voiceB && a && b && a.name === b.name) return TTS.ranked().find((v) => v.name !== a.name) || b;
   return b;
 };
+const voiceSelValue = (key) => (P.settings[key] === '__system' ? '__system' : (key === 'voiceA' ? voiceA() : voiceB())?.name || '');
 const enItem = (text, el, who = 'A', extra = {}) => ({ text, el, voice: who === 'B' ? voiceB() : voiceA(), lang: 'en-US', ...extra });
 const koItem = (text, el, extra = {}) => ({ text, el, voice: TTS.ko(), lang: 'ko-KR', rate: Math.min(1.1, P.settings.rate + 0.1), ...extra });
 
@@ -944,8 +947,11 @@ ACT.quitReview = () => { RV = null; stopAudio(); go('#/review'); };
 // ================= 설정 =================
 function viewSettings() {
   const s = P.settings, voices = TTS.ranked();
-  const vA = voiceA(), vB = voiceB();
-  const vOpts = (cur) => voices.length ? voices.map((v) => `<option value="${esc(v.name)}" ${cur && cur.name === v.name ? 'selected' : ''}>${esc(v.name)} (${esc(v.lang)})</option>`).join('') : '<option>음성을 불러오는 중…</option>';
+  const vOpts = (key) => {
+    const cur = voiceSelValue(key);
+    return `<option value="__system" ${cur === '__system' ? 'selected' : ''}>아이폰 기본 목소리</option>`
+      + voices.map((v) => `<option value="${esc(v.name)}" ${cur === v.name ? 'selected' : ''}>${esc(v.name)} (${esc(v.lang)})</option>`).join('');
+  };
   const cardsN = Object.keys(P.cards).length;
   app.innerHTML = `
     <header class="top"><h1>설정</h1></header>
@@ -956,13 +962,14 @@ function viewSettings() {
     </section>
     <section class="card">
       <h2>소리</h2>
-      <div class="set-row" style="border-top:0"><span>목소리 A</span><select data-voice="voiceA">${vOpts(vA)}</select></div>
-      <div class="set-row"><span>목소리 B <span class="muted sm">(대화 상대)</span></span><select data-voice="voiceB">${vOpts(vB)}</select></div>
+      <div class="set-row" style="border-top:0"><span>목소리 A</span><select data-voice="voiceA">${vOpts('voiceA')}</select></div>
+      <div class="set-row"><span>목소리 B <span class="muted sm">(대화 상대)</span></span><select data-voice="voiceB">${vOpts('voiceB')}</select></div>
+      <div class="set-row"><div><div>사용 가능한 영어 목소리</div><div class="set-sub">${voices.length}개${voices.some((v) => /ava/i.test(v.name)) ? ' · Ava 있음' : ''}</div></div><button class="btn sm" data-act="refreshVoices">목록 새로고침</button></div>
       <div class="set-row"><span>속도 <b id="rateV">${s.rate.toFixed(2)}</b></span><input type="range" min="0.6" max="1.2" step="0.05" value="${s.rate}" id="rate"></div>
       <div class="set-row"><div><div>전체 듣기에서 한국어도 읽기</div><div class="set-sub">한국어 → 영어 순서로 (책 MP3처럼)</div></div><input type="checkbox" class="sw" data-set="readKo" ${s.readKo ? 'checked' : ''}></div>
       <div class="set-row"><span>영어 반복 횟수</span><div class="seg">${[1, 2, 3].map((n) => `<button data-act="setRepeat" data-n="${n}" class="${s.repeat === n ? 'on' : ''}">${n}번</button>`).join('')}</div></div>
       <button class="btn block" data-act="testVoice">목소리 들어보기</button>
-      <p class="hint">아이폰에서 더 자연스러운 목소리를 쓰려면: 설정 앱 → 손쉬운 사용 → 읽기 및 말하기 → 음성 → 영어에서 'Ava (프리미엄)' 같은 고품질 음성을 내려받은 뒤 여기서 고르세요.</p>
+      <p class="hint">더 자연스러운 목소리: 설정 앱 → 손쉬운 사용 → 읽기 및 말하기 → 음성 → 영어에서 'Ava (프리미엄)'을 내려받아 선택해 두세요. 받은 뒤에는 이 앱을 완전히 종료했다가(앱 전환 화면에서 위로 밀기) 다시 열어야 목록에 나타나요. 목록에 끝내 없으면 '아이폰 기본 목소리'를 고르세요.</p>
     </section>
     <section class="card">
       <h2>데이터</h2>
@@ -980,6 +987,7 @@ function viewSettings() {
 TTS.onChange(() => { if (location.hash === '#/settings' && BOOK) viewSettings(); });
 ACT.setPer = (el) => { P.settings.perDay = +el.dataset.n; save(); $$('[data-act="setPer"]').forEach((b) => b.classList.toggle('on', b === el)); };
 ACT.setRepeat = (el) => { P.settings.repeat = +el.dataset.n; save(); $$('[data-act="setRepeat"]').forEach((b) => b.classList.toggle('on', b === el)); };
+ACT.refreshVoices = () => { TTS.refresh(); viewSettings(); toast(`영어 목소리 ${TTS.ranked().length}개`); };
 ACT.testVoice = () => playItems([enItem('Hi, how are you doing today?', null, 'A'), enItem('Pretty good, thanks. How about you?', null, 'B')]);
 ACT.resetProgress = () => {
   if (!confirm('학습 완료 표시, 복습 카드, 오답 노트, 연속 학습 기록을 모두 지울까요? 되돌릴 수 없습니다.')) return;
