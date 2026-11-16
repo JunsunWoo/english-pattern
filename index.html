@@ -357,7 +357,12 @@ const TTS = (() => {
   const synth = window.speechSynthesis;
   let voices = [], listeners = [], token = 0;
   const load = () => { voices = synth ? synth.getVoices() : []; listeners.forEach((f) => f()); };
-  if (synth) { load(); if ('onvoiceschanged' in synth) synth.onvoiceschanged = load; setTimeout(load, 700); }
+  // iOS 홈 화면 앱은 목록이 처음엔 비어 있다가 늦게(또는 첫 발화 뒤에) 채워지므로 여러 번 다시 읽는다
+  const loadIfChanged = () => { const n = voices.length; voices = synth ? synth.getVoices() : []; if (voices.length !== n) listeners.forEach((f) => f()); };
+  if (synth) {
+    load(); if ('onvoiceschanged' in synth) synth.onvoiceschanged = load;
+    let tries = 0; const poll = setInterval(() => { loadIfChanged(); if (voices.length || ++tries > 20) clearInterval(poll); }, 500);
+  }
   const en = () => voices.filter((v) => /^en[-_]/i.test(v.lang));
   const ranked = () => {
     const all = en(), us = all.filter((v) => /en[-_]US/i.test(v.lang));
@@ -367,13 +372,13 @@ const TTS = (() => {
   const ko = () => voices.find((v) => /^ko/i.test(v.lang)) || null;
   // '__system' = 목소리를 지정하지 않고 iOS 설정(손쉬운 사용 → 읽기 및 말하기)의 기본 음성에 맡김
   function voice(name, k) { if (name === '__system') return null; return en().find((v) => v.name === name) || ranked()[k] || ranked()[0] || null; }
-  const refresh = () => load();
+  const refresh = () => loadIfChanged();
   function one(text, voiceObj, lang, rate) {
     return new Promise((res) => {
       if (!synth) return res();
       const u = new SpeechSynthesisUtterance(text);
       u.lang = voiceObj?.lang || lang; if (voiceObj) u.voice = voiceObj; u.rate = rate;
-      let fin = false; const done = () => { if (!fin) { fin = true; clearTimeout(tm); res(); } };
+      let fin = false; const done = () => { if (!fin) { fin = true; clearTimeout(tm); if (synth) loadIfChanged(); res(); } };
       u.onend = done; u.onerror = done;
       const tm = setTimeout(done, 3000 + (text.length * 110) / rate);
       synth.speak(u);
