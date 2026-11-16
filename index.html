@@ -428,22 +428,24 @@ const TTS = (() => {
 })();
 
 // ================= 예문 원어민 소리 (출판사 훈련 MP3의 해당 구간만 재생) =================
-// mp3times.json: { 패턴번호: [[한국어 시작, 끝, 영어 시작, 끝], ...예문 순서] } — 시간표(숫자)만 담고 있다
-let TIMES = LS.get('times', null);
-fetch('mp3times.json', { cache: 'no-cache' }).then((r) => (r.ok ? r.json() : null)).then((j) => { if (j && j.t) { TIMES = j.t; LS.set('times', j.t); } }).catch(() => {});
+// mp3times.json — 시간표(숫자)만 담고 있다
+//   t: { 패턴번호: [[한국어 시작, 끝, 영어 시작, 끝], ...예문 순서] }   (훈련 MP3)
+//   d: { 패턴번호: [[시작, 끝], ...대화 차례 순서] }                     (듣기 MP3, 찾은 패턴만)
+let TIMES = LS.get('times2', null) || { t: null, d: null };
+fetch('mp3times.json', { cache: 'no-cache' }).then((r) => (r.ok ? r.json() : null)).then((j) => { if (j && j.t) { TIMES = { t: j.t, d: j.d || null }; LS.set('times2', TIMES); } }).catch(() => {});
 
 const CLIP = (() => {
   const a = new Audio();
   a.preload = 'auto'; a.setAttribute('playsinline', ''); a.setAttribute('webkit-playsinline', '');
-  const URL_OF = (n) => `https://nexusbook.com/vod/qr/5061/ex/${n}.mp3`;
+  const URL_OF = (k, n) => `https://nexusbook.com/vod/qr/5061/${k}/${n}.mp3`;
   let token = 0;
   const once = (ev, ms) => new Promise((res) => {
     let t; const f = () => { clearTimeout(t); a.removeEventListener(ev, f); res(true); };
     a.addEventListener(ev, f); t = setTimeout(() => { a.removeEventListener(ev, f); res(false); }, ms);
   });
   // 반환: 'ok' 끝까지 재생 / 'stopped' 다른 재생으로 중단 / 'fail' 재생 불가
-  function play({ n, s, e }) {
-    const my = ++token, url = URL_OF(n), rate = P.settings.mp3Rate || 1;
+  function play({ k = 'ex', n, s, e }) {
+    const my = ++token, url = URL_OF(k, n), rate = P.settings.mp3Rate || 1;
     a.muted = true;                       // 원하는 위치로 옮기기 전 소리가 새지 않게
     if (a.src !== url) a.src = url;
     a.playbackRate = rate;
@@ -477,9 +479,18 @@ const voiceB = () => {
 const voiceSelValue = (key) => (P.settings[key] === '__system' ? '__system' : (key === 'voiceA' ? voiceA() : voiceB())?.name || '');
 const enItem = (text, el, who = 'A', extra = {}) => ({ text, el, voice: who === 'B' ? voiceB() : voiceA(), lang: 'en-US', ...extra });
 const koItem = (text, el, extra = {}) => ({ text, el, voice: TTS.ko(), lang: 'ko-KR', rate: Math.min(1.1, P.settings.rate + 0.1), ...extra });
-const exTime = (p, i) => (P.settings.native !== false && TIMES && TIMES[p.no] && TIMES[p.no][i]) || null;
-function exEnItem(p, i, el, extra = {}) { const t = exTime(p, i), it = enItem(segText(p.examples[i].en), el, 'A', extra); if (t) it.clip = { n: p.no, s: t[2], e: t[3] }; return it; }
-function exKoItem(p, i, el, extra = {}) { const t = exTime(p, i), it = koItem(segText(p.examples[i].ko), el, extra); if (t) it.clip = { n: p.no, s: t[0], e: t[1] }; return it; }
+const nativeOn = () => P.settings.native !== false;
+const exTime = (p, i) => (nativeOn() && TIMES.t?.[p.no]?.[i]) || null;
+const dlgTime = (p, j) => (nativeOn() && TIMES.d?.[p.no]?.[j]) || null;
+function exEnItem(p, i, el, extra = {}) { const t = exTime(p, i), it = enItem(segText(p.examples[i].en), el, 'A', extra); if (t) it.clip = { k: 'ex', n: p.no, s: t[2], e: t[3] }; return it; }
+function exKoItem(p, i, el, extra = {}) { const t = exTime(p, i), it = koItem(segText(p.examples[i].ko), el, extra); if (t) it.clip = { k: 'ex', n: p.no, s: t[0], e: t[1] }; return it; }
+// 대화 차례 전체(성우 녹음). 목표 문장만 들려줄 때는 차례 전체가 그 문장일 때만 녹음을 쓴다
+function dlgItem(p, j, el, { targetOnly = false, ...extra } = {}) {
+  const l = p.dialog[j], text = targetOnly ? l.tEn : l.en;
+  const it = enItem(text, el, l.s === 'B' ? 'B' : 'A', extra), t = dlgTime(p, j);
+  if (t && (!targetOnly || l.en.trim() === l.tEn.trim())) it.clip = { k: 'li', n: p.no, s: t[0], e: t[1] };
+  return it;
+}
 
 let playingToken = 0;
 async function playItems(items) {
@@ -762,11 +773,12 @@ ACT.playEx = () => {
   $$('#exCard .ex').forEach((ex) => ex.classList.add('revealed'));
   playItems(items);
 };
-ACT.sayTurn = (el) => { const j = +el.dataset.j, l = CUR.dialog[j], t = el.closest('.turn'); t.querySelector('.tgt')?.classList.add('shown'); playItems([enItem(l.en, t.querySelector('.bubble'), l.s === 'B' ? 'B' : 'A')]); };
+ACT.sayTurn = (el) => { const j = +el.dataset.j, t = el.closest('.turn'); t.querySelector('.tgt')?.classList.add('shown'); playItems([dlgItem(CUR, j, t.querySelector('.bubble'))]); };
 ACT.revealTgt = (el) => el.classList.toggle('shown');
 ACT.playDlg = () => {
   $$('.tgt').forEach((t) => t.classList.add('shown'));
-  playItems(CUR.dialog.map((l, j) => enItem(l.en, $(`.turn[data-j="${j}"] .bubble`), l.s === 'B' ? 'B' : 'A', { pause: 450 })));
+  // 녹음이 있으면 차례 사이 쉼은 녹음 그대로가 자연스러워서 짧게
+  playItems(CUR.dialog.map((l, j) => dlgItem(CUR, j, $(`.turn[data-j="${j}"] .bubble`), { pause: dlgTime(CUR, j) ? 150 : 450 })));
 };
 ACT.complete = (el) => {
   const nowDone = toggleDone(CUR.no);
@@ -950,7 +962,7 @@ function answerSentence(q) {
 // 정답 문장 듣기: 예문이면 원어민 구간, 대화면 화자 목소리, 단원 테스트는 아이폰 음성
 function sayAnswer(q) {
   if (q.e && q.i != null) return sayEx(q.p, q.i);
-  if (q.kind === 'speak') return say(q.l.tEn, q.l.s === 'B' ? 'B' : 'A');
+  if (q.kind === 'speak') return playItems([dlgItem(q.p, q.p.dialog.indexOf(q.l), null, { targetOnly: true })]);
   return say(answerSentence(q));
 }
 function feedback(ok, q, extra = '') {
@@ -1074,7 +1086,7 @@ function reviewCard() {
     ${RV.shown ? `<div class="grade"><button class="g-again" data-act="rvGrade" data-g="again">몰랐음<small>다시 나옴</small></button><button class="g-hard" data-act="rvGrade" data-g="hard">헷갈림<small>내일</small></button><button class="g-good" data-act="rvGrade" data-g="good">알았음<small>${INTERVALS[Math.min((P.cards[id]?.box ?? 0) + 1, INTERVALS.length - 1)]}일 뒤</small></button></div>`
       : '<button class="btn primary block" data-act="rvShow">정답 보기</button>'}`;
 }
-const rvSay = () => { const x = itemOf(RV.queue[RV.i]); if (x.kind === 'e') sayEx(x.p, x.i); else say(x.l.tEn, x.l.s === 'B' ? 'B' : 'A'); };
+const rvSay = () => { const x = itemOf(RV.queue[RV.i]); if (x.kind === 'e') sayEx(x.p, x.i); else playItems([dlgItem(x.p, x.j, null, { targetOnly: true })]); };
 ACT.rvShow = () => { if (!RV || RV.shown) return; RV.shown = true; reviewCard(); if (P.settings.autoplay) rvSay(); };
 ACT.rvPlay = rvSay;
 ACT.rvGrade = (el) => {
@@ -1106,7 +1118,7 @@ function viewSettings() {
     </section>
     <section class="card">
       <h2>소리</h2>
-      <div class="set-row" style="border-top:0"><div><div>예문은 원어민 녹음으로</div><div class="set-sub">출판사 MP3의 해당 문장 · 인터넷 필요 (안 되면 아이폰 음성)</div></div><input type="checkbox" class="sw" data-set="native" ${s.native !== false ? 'checked' : ''}></div>
+      <div class="set-row" style="border-top:0"><div><div>예문·대화는 원어민 녹음으로</div><div class="set-sub">출판사 MP3의 해당 부분 · 인터넷 필요 (안 되면 아이폰 음성)</div></div><input type="checkbox" class="sw" data-set="native" ${s.native !== false ? 'checked' : ''}></div>
       <div class="set-row"><span>목소리 A <span class="muted sm">(대화·기타)</span></span><select data-voice="voiceA">${vOpts('voiceA')}</select></div>
       <div class="set-row"><span>목소리 B <span class="muted sm">(대화 상대)</span></span><select data-voice="voiceB">${vOpts('voiceB')}</select></div>
       <div class="set-row"><div><div>사용 가능한 영어 목소리</div><div class="set-sub">${voices.length}개${voices.some((v) => /ava/i.test(v.name)) ? ' · Ava 있음' : ''}</div></div><button class="btn sm" data-act="refreshVoices">목록 새로고침</button></div>
