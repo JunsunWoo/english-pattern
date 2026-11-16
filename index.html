@@ -240,6 +240,20 @@
   #player[hidden] { display: none; }
   #playerText { flex: 1; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #player button { height: 36px; padding: 0 14px; border-radius: 10px; background: color-mix(in srgb, var(--bg) 18%, transparent); font-weight: 700; font-size: 14px; }
+  /* 원어민 MP3 */
+  .mp3-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+  .mp3-btns .btn { flex-direction: column; gap: 2px; min-height: 64px; white-space: normal; }
+  .mp3-btns .btn small { font-size: 12px; font-weight: 600; color: var(--muted); }
+  .mp3-btns .btn.on small { color: var(--accent); }
+  #mp3bar { position: fixed; left: 12px; right: 12px; bottom: calc(var(--tabh) + env(safe-area-inset-bottom) + 10px); max-width: 616px; margin: 0 auto; background: var(--surface); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 8px 26px rgba(0,0,0,.16); padding: 10px 12px 8px; z-index: 29; display: grid; grid-template-columns: auto 1fr auto auto; gap: 4px 10px; align-items: center; }
+  #mp3bar[hidden] { display: none; }
+  .mp3-play { width: 40px; height: 40px; border-radius: 50%; background: var(--accent); color: #fff; display: grid; place-items: center; }
+  .mp3-play svg { width: 16px; height: 16px; }
+  .mp3-info { min-width: 0; }
+  .mp3-title { font-size: 14px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mp3-time { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .mp3-sm { font-size: 13px; font-weight: 700; padding: 7px 9px; border-radius: 9px; background: var(--surface2); min-width: 44px; }
+  #mp3seek { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); margin: 2px 0 0; height: 18px; }
   #toast { position: fixed; left: 50%; bottom: calc(var(--tabh) + env(safe-area-inset-bottom) + 22px); transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 999px; font-size: 14px; font-weight: 600; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 40; white-space: nowrap; }
   #toast.show { opacity: 1; }
 </style>
@@ -249,6 +263,15 @@
 
 <div id="player" hidden><div id="playerText"></div><button id="playerStop">정지</button></div>
 <div id="toast"></div>
+
+<audio id="mp3" preload="none" playsinline></audio>
+<div id="mp3bar" hidden>
+  <button class="mp3-play" id="mp3Toggle" aria-label="재생/일시정지"></button>
+  <div class="mp3-info"><div class="mp3-title" id="mp3Title"></div><div class="mp3-time" id="mp3Time">0:00</div></div>
+  <button class="mp3-sm" id="mp3Rate" aria-label="재생 속도">1.0×</button>
+  <button class="mp3-sm" id="mp3Close" aria-label="닫기">닫기</button>
+  <input type="range" id="mp3seek" min="0" max="1000" value="0" aria-label="재생 위치">
+</div>
 
 <nav id="tabs">
   <a href="#/" data-tab="today"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>오늘</a>
@@ -276,6 +299,7 @@ const ICON = {
   check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
   star: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/></svg>',
   starOn: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/></svg>',
+  pause: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>',
 };
 
 const LS = {
@@ -414,6 +438,7 @@ const koItem = (text, el, extra = {}) => ({ text, el, voice: TTS.ko(), lang: 'ko
 let playingToken = 0;
 async function playItems(items) {
   if (!TTS.ok) return toast('이 브라우저는 음성 읽기를 지원하지 않습니다');
+  MP3.pause();
   const my = ++playingToken;
   const clear = () => $$('.playing').forEach((e) => e.classList.remove('playing'));
   clear();
@@ -430,6 +455,57 @@ async function playItems(items) {
 function stopAudio() { playingToken++; TTS.stop(); $$('.playing').forEach((e) => e.classList.remove('playing')); $('#player').hidden = true; }
 $('#playerStop').onclick = stopAudio;
 const say = (text, who = 'A') => playItems([enItem(text, null, who)]);
+
+// ================= 원어민 MP3 (출판사 QR 자료를 그 서버에서 바로 재생) =================
+const MP3 = (() => {
+  const URL_OF = (k, n) => `https://nexusbook.com/vod/qr/5061/${k}/${n}.mp3`;
+  const NAME = { li: '듣기 MP3', ex: '훈련 MP3' };
+  const RATES = [0.8, 0.9, 1, 1.1, 1.25];
+  const a = $('#mp3'), bar = $('#mp3bar'), seek = $('#mp3seek');
+  let Q = null, seeking = false;
+  const fmt = (s) => (isFinite(s) ? `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}` : '0:00');
+  const cur = () => (Q ? Q.list[Q.i] : null);
+  const title = (t) => `Pattern ${pad3(t.n)} ${NAME[t.k]}`;
+  function ui() {
+    const t = cur(); if (!t) { bar.hidden = true; return; }
+    bar.hidden = false; $('#player').hidden = true;
+    $('#mp3Title').textContent = title(t) + (Q.list.length > 1 ? ` (${Q.i + 1}/${Q.list.length})` : '');
+    $('#mp3Toggle').innerHTML = a.paused ? ICON.play : ICON.pause;
+    const r = P.settings.mp3Rate || 1;
+    $('#mp3Rate').textContent = `${r === 1 ? '1.0' : r}×`;
+    $$('[data-act="mp3"]').forEach((b) => b.classList.toggle('on', +b.dataset.n === t.n && b.dataset.k === t.k));
+  }
+  function load() {
+    const t = cur();
+    a.src = URL_OF(t.k, t.n); a.playbackRate = P.settings.mp3Rate || 1;
+    a.play().catch(() => toast('MP3를 재생할 수 없습니다. 인터넷 연결을 확인하세요'));
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.metadata = new MediaMetadata({ title: title(t), artist: IDX?.pats.get(t.n)?.en || '', album: '영어패턴 매일 학습', artwork: [{ src: 'icon-512.png', sizes: '512x512', type: 'image/png' }] });
+    }
+    ui();
+  }
+  function play(list, i = 0) { stopAudio(); Q = { list, i }; load(); }
+  function step(d) { if (!Q) return; const j = Q.i + d; if (j < 0 || j >= Q.list.length) return; Q.i = j; load(); }
+  function close() { a.pause(); a.removeAttribute('src'); a.load(); Q = null; ui(); }
+  a.addEventListener('loadedmetadata', () => { a.playbackRate = P.settings.mp3Rate || 1; });
+  a.addEventListener('play', ui); a.addEventListener('pause', ui);
+  a.addEventListener('timeupdate', () => { if (!seeking && a.duration) seek.value = Math.round((a.currentTime / a.duration) * 1000); $('#mp3Time').textContent = `${fmt(a.currentTime)} / ${fmt(a.duration)}`; });
+  a.addEventListener('ended', () => { if (Q && Q.i < Q.list.length - 1) step(1); else ui(); });
+  a.addEventListener('error', () => { if (Q) toast('MP3를 불러오지 못했습니다'); });
+  seek.addEventListener('input', () => { seeking = true; if (a.duration) $('#mp3Time').textContent = `${fmt((seek.value / 1000) * a.duration)} / ${fmt(a.duration)}`; });
+  seek.addEventListener('change', () => { if (a.duration) a.currentTime = (seek.value / 1000) * a.duration; seeking = false; });
+  $('#mp3Toggle').onclick = () => { if (a.paused) { stopAudio(); a.play().catch(() => {}); } else a.pause(); };
+  $('#mp3Close').onclick = close;
+  $('#mp3Rate').onclick = () => { const r = P.settings.mp3Rate || 1; P.settings.mp3Rate = RATES[(RATES.indexOf(r) + 1) % RATES.length] ?? 1; a.playbackRate = P.settings.mp3Rate; save(); ui(); };
+  if ('mediaSession' in navigator) {
+    const ms = navigator.mediaSession;
+    ms.setActionHandler('play', () => a.play());
+    ms.setActionHandler('pause', () => a.pause());
+    ms.setActionHandler('previoustrack', () => step(-1));
+    ms.setActionHandler('nexttrack', () => step(1));
+  }
+  return { play, pause: () => { if (!a.paused) a.pause(); }, ui };
+})();
 
 // ================= 화면 전환 =================
 let skipNextRoute = false;
@@ -452,7 +528,7 @@ function route() {
   else { location.replace('#/'); return; }
   const tab = h.startsWith('#/p/') ? 'list' : h.startsWith('#/quiz') ? 'quiz' : (h.slice(2) || 'today');
   $$('#tabs a').forEach((a) => a.classList.toggle('on', a.dataset.tab === tab));
-  updateBadge();
+  updateBadge(); MP3.ui();
   if (!h.startsWith('#/quiz/run') && !(h === '#/review' && RV)) window.scrollTo(0, 0);
 }
 function updateBadge() { if (!BOOK) return; const n = dueIds().length, b = $('#dueBadge'); b.hidden = !n; b.textContent = n > 99 ? '99+' : n; }
@@ -513,6 +589,7 @@ function viewToday() {
       <div class="row between"><h2>오늘의 패턴</h2><span class="muted sm">${todayDone}/${list.length} 완료</span></div>
       <div class="plist" style="margin-top:6px">${list.map(patRow).join('')}</div>
       ${next ? `<a class="btn ${allTodayDone ? '' : 'primary'} block" href="#/p/${next}">${allTodayDone ? '오늘 목표 달성! 다음 패턴 더 하기' : todayDone ? '이어서 학습' : '학습 시작'}</a>` : '<p class="hint">200개 패턴을 모두 학습했어요. 복습과 테스트로 다지세요.</p>'}
+      ${list.length ? `<button class="btn block" data-act="todayMp3" style="margin-top:8px">오늘 패턴 MP3 이어 듣기<span class="muted sm" style="font-weight:600">· 화면 꺼도 재생</span></button>` : ''}
     </section>
     <section class="grid2">
       <a class="card tile" href="#/review"><div class="label">복습할 문장</div><div class="big">${due}</div><div class="muted sm">${due ? '지금 복습하기' : '오늘 복습 끝'}</div></a>
@@ -592,6 +669,13 @@ function viewPattern(no) {
       <p class="desc">${esc(p.desc)}</p>
       ${p.similar.length ? `<div class="similar"><span class="label">유사 패턴</span>${p.similar.map((s) => `<span class="chip">${esc(s)}</span>`).join('')}</div>` : ''}
     </section>
+    <section class="card">
+      <div class="sec-h"><h2>원어민 MP3</h2><span class="muted sm">출판사 제공 · 인터넷 필요</span></div>
+      <div class="mp3-btns">
+        <button class="btn" data-act="mp3" data-k="li" data-n="${no}">듣기 MP3<small>책 내용 · 대화는 성우</small></button>
+        <button class="btn" data-act="mp3" data-k="ex" data-n="${no}">훈련 MP3<small>예문 따라 말하기</small></button>
+      </div>
+    </section>
     <section class="card ${hide ? 'hide-en' : ''}" id="exCard">
       <div class="sec-h"><h2>예문</h2><div class="row"><button class="btn sm ${hide ? 'on' : ''}" data-act="toggleHide">영어 가리기</button><button class="btn sm primary" data-act="playEx">전체 듣기</button></div></div>
       ${p.examples.map((e, i) => `
@@ -614,6 +698,8 @@ function viewPattern(no) {
       ${no < BOOK.patterns.length ? `<a class="btn" href="#/p/${no + 1}">다음</a>` : ''}
     </div>`;
 }
+ACT.mp3 = (el) => MP3.play([{ k: el.dataset.k, n: +el.dataset.n }]);
+ACT.todayMp3 = () => { const list = todayList().flatMap((n) => [{ k: 'li', n }, { k: 'ex', n }]); if (list.length) MP3.play(list); };
 ACT.fav = (el) => { const n = CUR.no; if (P.fav[n]) delete P.fav[n]; else P.fav[n] = 1; save(); el.classList.toggle('on', !!P.fav[n]); el.innerHTML = P.fav[n] ? ICON.starOn : ICON.star; };
 ACT.sayTitle = () => say(CUR.en.replace(/[~…]+/g, ' ').replace(/\.{2,}/g, ' '));
 ACT.sayEx = (el) => { const i = +el.dataset.i, ex = el.closest('.ex'); ex.classList.add('revealed'); playItems([enItem(segText(CUR.examples[i].en), ex)]); };
