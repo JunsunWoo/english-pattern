@@ -9,7 +9,8 @@ self.addEventListener('install', (e) => {
 self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      // 같은 주소(github.io)의 다른 앱 캐시는 건드리지 않는다
+      .then((keys) => Promise.all(keys.filter((k) => k.startsWith('ep500-') && k !== CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
